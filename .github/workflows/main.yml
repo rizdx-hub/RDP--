@@ -19,21 +19,30 @@ jobs:
           netsh advfirewall firewall add rule name="RDP-Tailscale" dir=in action=allow protocol=TCP localport=3389
           Restart-Service -Name TermService -Force
 
-      - name: Create RDP User
+      - name: Create RDP User with Custom Password
         run: |
-          $SecurePassword = ConvertTo-SecureString "TempP@ssw0rd2026!" -AsPlainText -Force
-          New-LocalUser -Name "RDP" -Password $SecurePassword -AccountNeverExpires -PasswordNeverExpires
+          # 1. إنشاء المستخدم بكلمة مرور قوية مؤقتاً
+          $TempPassword = ConvertTo-SecureString "TempP@ssw0rd2026!" -AsPlainText -Force
+          New-LocalUser -Name "RDP" -Password $TempPassword -AccountNeverExpires -PasswordNeverExpires
           Add-LocalGroupMember -Group "Administrators" -Member "RDP"
           Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RDP"
           
-          try {
-              $user = [ADSI]"WinNT://$env:COMPUTERNAME/RDP,user"
-              $user.SetPassword("1")
-              $user.SetInfo()
-          } catch {
-              Write-Host "Could not set password to 1."
-          }
-          echo "RDP_CREDS=User: RDP | Password: 1" >> $env:GITHUB_ENV
+          # 2. تعطيل سياسة التعقيد في الريجستري
+          Set-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' -Name "PasswordComplexity" -Value 0 -ErrorAction SilentlyContinue
+          
+          # 3. تغيير كلمة المرور إلى 123456789 باستخدام VBScript (يتجاوز فحص PowerShell)
+          $VbsCode = @"
+          Set objUser = GetObject("WinNT://" & CreateObject("WScript.Network").ComputerName & "/RDP,user")
+          objUser.SetPassword "123456789"
+          objUser.SetInfo
+          "@
+          $VbsPath = "$env:TEMP\chpass.vbs"
+          $VbsCode | Out-File -FilePath $VbsPath -Encoding ASCII
+          cscript.exe //nologo $VbsPath
+          Remove-Item $VbsPath -Force -ErrorAction SilentlyContinue
+          
+          # 4. حفظ البيانات للعرض
+          echo "RDP_CREDS=User: RDP | Password: 123456789" >> $env:GITHUB_ENV
 
       - name: Install Tailscale
         run: |
@@ -48,12 +57,13 @@ jobs:
           & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-runner-$env:GITHUB_RUN_ID
           $tsIP = $null
           $retries = 0
-          while (-not $tsIP -and $retries -lt 10) {
+          while (-not $tsIP -and $retries -lt 15) {
               $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
+              if ($tsIP) { break }
               Start-Sleep -Seconds 5
               $retries++
           }
-          if (-not $tsIP) { Write-Error "Tailscale IP not assigned. Exiting."; exit 1 }
+          if (-not $tsIP) { Write-Error "Tailscale IP not assigned."; exit 1 }
           echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
       
       - name: Verify RDP Accessibility
