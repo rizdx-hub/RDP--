@@ -11,33 +11,28 @@ jobs:
     steps:
       - name: Configure Core RDP Settings
         run: |
-          # Enable RDP
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
-                             -Name "fDenyTSConnections" -Value 0 -Force
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
-                             -Name "UserAuthentication" -Value 0 -Force
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
-                             -Name "SecurityLayer" -Value 0 -Force
-
-          # Firewall
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0 -Force
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "SecurityLayer" -Value 0 -Force
+          
           netsh advfirewall firewall delete rule name="RDP-Tailscale"
           netsh advfirewall firewall add rule name="RDP-Tailscale" dir=in action=allow protocol=TCP localport=3389
           Restart-Service -Name TermService -Force
 
-      - name: Disable Password Policy and Create User
+      - name: Create RDP User
         run: |
-          # 1. تعطيل سياسة كلمة المرور (تجاوز الحد الأدنى للطول والتعقيد)
-          net accounts /minpwlen:0
-          net accounts /maxpwage:unlimited
+          $SecurePassword = ConvertTo-SecureString "TempP@ssw0rd2026!" -AsPlainText -Force
+          New-LocalUser -Name "RDP" -Password $SecurePassword -AccountNeverExpires -PasswordNeverExpires
+          Add-LocalGroupMember -Group "Administrators" -Member "RDP"
+          Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RDP"
           
-          # 2. إنشاء المستخدم بكلمة المرور 1
-          net user RDP 1 /add /expires:never
-          
-          # 3. إضافة المستخدم إلى مجموعة المسؤولين والريموت
-          net localgroup Administrators RDP /add
-          net localgroup "Remote Desktop Users" RDP /add
-          
-          # 4. حفظ البيانات
+          try {
+              $user = [ADSI]"WinNT://$env:COMPUTERNAME/RDP,user"
+              $user.SetPassword("1")
+              $user.SetInfo()
+          } catch {
+              Write-Host "Could not set password to 1."
+          }
           echo "RDP_CREDS=User: RDP | Password: 1" >> $env:GITHUB_ENV
 
       - name: Install Tailscale
